@@ -1,0 +1,25 @@
+<?php
+
+// Include the QR code library
+require_once 'phpqrcode/qrlib.php';
+
+// URL you want encoded
+$data = "https://acremannproperties.com/";
+
+// File where QR image will be saved
+$filename = "acremann_qrcode.png";
+
+// QR Code configuration
+$ecc = QR_ECLEVEL_H; // error correction level
+$size = 10;          // pixel size
+$margin = 2;         // margin
+
+// Generate QR code image
+QRcode::png($data, $filename, $ecc, $size, $margin);
+
+// Display the image
+echo "<h2>QR Code Generated</h2>";
+echo "<img src='$filename'>";
+echo "<p>Scan to open: $data</p>";
+
+?>
