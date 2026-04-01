@@ -74,28 +74,58 @@ $pageUrl = $httpHost !== "" ? $scheme . "://" . $httpHost . $scriptName : "";
 
 $pageTitle = "Free QR Code Generator – Create QR Codes from URLs Online";
 $metaDescription = "Create a free QR code for any website URL in seconds. No signup. Generate a scannable QR code online and download it as a PNG—perfect for links, menus, and print.";
+$siteName = "Tools";
+$author = "Designekta Studios";
+$themeColor = "#f59e0b";
+$ogLocaleAlt = "en_GB";
+$demoLinkForOgImage = $pageUrl !== "" ? $pageUrl : "https://example.com";
+$ogImageUrl = "https://api.qrserver.com/v1/create-qr-code/?size=1200x630&margin=10&data=" . rawurlencode($demoLinkForOgImage);
+$ogImageWidth = "1200";
+$ogImageHeight = "630";
+$ogImageAlt = "Preview QR code graphic for the free online QR code generator";
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="format-detection" content="telephone=no">
     <title><?php echo htmlspecialchars($pageTitle); ?></title>
     <meta name="description" content="<?php echo htmlspecialchars($metaDescription); ?>">
-    <meta name="robots" content="index, follow">
+    <meta name="author" content="<?php echo htmlspecialchars($author); ?>">
+    <meta name="application-name" content="<?php echo htmlspecialchars($siteName); ?>">
+    <meta name="theme-color" content="<?php echo htmlspecialchars($themeColor); ?>">
+    <meta name="color-scheme" content="light">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <?php if ($pageUrl !== ""): ?>
     <link rel="canonical" href="<?php echo htmlspecialchars($pageUrl); ?>">
     <?php endif; ?>
+
+    <!-- Open Graph (Facebook, LinkedIn, etc.) -->
+    <meta property="og:site_name" content="<?php echo htmlspecialchars($siteName); ?>">
     <meta property="og:type" content="website">
     <meta property="og:title" content="<?php echo htmlspecialchars($pageTitle); ?>">
     <meta property="og:description" content="<?php echo htmlspecialchars($metaDescription); ?>">
     <meta property="og:locale" content="en_US">
+    <meta property="og:locale:alternate" content="<?php echo htmlspecialchars($ogLocaleAlt); ?>">
     <?php if ($pageUrl !== ""): ?>
     <meta property="og:url" content="<?php echo htmlspecialchars($pageUrl); ?>">
     <?php endif; ?>
+    <meta property="og:image" content="<?php echo htmlspecialchars($ogImageUrl); ?>">
+    <meta property="og:image:secure_url" content="<?php echo htmlspecialchars($ogImageUrl); ?>">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="<?php echo htmlspecialchars($ogImageWidth); ?>">
+    <meta property="og:image:height" content="<?php echo htmlspecialchars($ogImageHeight); ?>">
+    <meta property="og:image:alt" content="<?php echo htmlspecialchars($ogImageAlt); ?>">
+
+    <!-- Twitter / X -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="<?php echo htmlspecialchars($pageTitle); ?>">
     <meta name="twitter:description" content="<?php echo htmlspecialchars($metaDescription); ?>">
+    <meta name="twitter:image" content="<?php echo htmlspecialchars($ogImageUrl); ?>">
+    <meta name="twitter:image:alt" content="<?php echo htmlspecialchars($ogImageAlt); ?>">
     <style>
         :root {
             color-scheme: light;
