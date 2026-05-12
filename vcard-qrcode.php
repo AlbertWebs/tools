@@ -183,8 +183,74 @@ function hasEmailOrPhone(array $f): bool
     return false;
 }
 
+/**
+ * Human-readable name for UI (matches vCard FN logic, unescaped).
+ *
+ * @param array<string, string> $f
+ */
+function contactDisplayName(array $f): string
+{
+    $fn = trim($f["fn"] ?? "");
+    if ($fn !== "") {
+        return $fn;
+    }
+    $prefix = trim($f["name_prefix"] ?? "");
+    $given = trim($f["given_name"] ?? "");
+    $additional = trim($f["additional_names"] ?? "");
+    $family = trim($f["family_name"] ?? "");
+    $suffix = trim($f["name_suffix"] ?? "");
+    $parts = array_filter([$prefix, $given, $additional, $family, $suffix], static fn ($p) => $p !== "");
+    $name = implode(" ", $parts);
+    if ($name !== "") {
+        return $name;
+    }
+    $org = trim($f["org"] ?? "");
+    return $org !== "" ? $org : "Contact";
+}
+
+/**
+ * @param array<string, string> $f
+ */
+function contactInitials(array $f): string
+{
+    $plain = preg_replace('/[^a-zA-Z0-9]/', '', contactDisplayName($f)) ?? "";
+    if (strlen($plain) >= 2) {
+        return strtoupper(substr($plain, 0, 2));
+    }
+    if (strlen($plain) === 1) {
+        return strtoupper($plain . $plain);
+    }
+    return "?";
+}
+
+function vcardUnfold(string $vcard): string
+{
+    $u = preg_replace("/\r\n[ \t]/", "", $vcard);
+    return is_string($u) ? $u : $vcard;
+}
+
+function vcardDownloadBasename(string $vcardText): string
+{
+    $flat = vcardUnfold($vcardText);
+    $label = "contact";
+    if (preg_match('/FN:([^\r\n]+)/', $flat, $m)) {
+        $raw = trim($m[1]);
+        $raw = str_replace(["\\n", "\\N"], " ", $raw);
+        $raw = str_replace("\\;", ";", str_replace("\\,", ",", str_replace("\\\\", "\\", $raw)));
+        $label = preg_replace('/[^a-zA-Z0-9_-]+/', "-", $raw);
+        $label = trim($label, "-") ?: "contact";
+    }
+    if (strlen($label) > 80) {
+        $label = substr($label, 0, 80);
+    }
+    return $label;
+}
+
 /** Maximum vCard payload length (bytes) for QR services and Version-40 QR (~M). */
 const VCARD_QR_MAX_BYTES = 2600;
+
+/** Max vCard size for .vcf download (bytes). */
+const VCARD_FILE_MAX_BYTES = 98304;
 
 /**
  * Same QR image API as qrcode-generator.php (no broken CDN paths).
@@ -226,6 +292,29 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["download_qr"] ?? "") === "
     exit;
 }
 
+// ----- Download .vcf (POST: same base64 payload) -----
+if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["download_vcf"] ?? "") === "1") {
+    $b64 = isset($_POST["vcard_b64"]) ? trim((string) $_POST["vcard_b64"]) : "";
+    $payload = $b64 !== "" ? base64_decode($b64, true) : false;
+    if ($payload === false || !is_string($payload) || strlen($payload) > VCARD_FILE_MAX_BYTES) {
+        http_response_code(400);
+        echo "Invalid or oversized vCard.";
+        exit;
+    }
+    if (strncmp($payload, "BEGIN:VCARD", 11) !== 0 || stripos($payload, "END:VCARD") === false) {
+        http_response_code(400);
+        echo "Invalid vCard payload.";
+        exit;
+    }
+
+    $base = vcardDownloadBasename($payload);
+    header("Content-Type: text/vcard; charset=utf-8");
+    header("Content-Disposition: attachment; filename=\"" . $base . ".vcf\"");
+    header("Content-Length: " . strlen($payload));
+    echo $payload;
+    exit;
+}
+
 // ----- Form page -----
 $fields = collectVcardFieldsFromRequest();
 $error = "";
@@ -233,7 +322,9 @@ $vcardText = "";
 $vcardQrError = "";
 $qrImgUrl = "";
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["download_qr"] ?? "") !== "1") {
+if ($_SERVER["REQUEST_METHOD"] === "POST"
+    && ($_POST["download_qr"] ?? "") !== "1"
+    && ($_POST["download_vcf"] ?? "") !== "1") {
     if (!hasAnyNameOrOrg($fields)) {
         $error = "Enter at least a display name, given/family name, or organization.";
     } elseif (!hasEmailOrPhone($fields)) {
@@ -278,6 +369,9 @@ $themeColor = "#0d9488";
     <?php if ($pageUrl !== ""): ?>
     <link rel="canonical" href="<?php echo esc($pageUrl); ?>">
     <?php endif; ?>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;1,500&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
             color-scheme: light;
@@ -401,6 +495,12 @@ $themeColor = "#0d9488";
             border-radius: 12px;
             background: #fff;
         }
+        .qr-box__caption {
+            margin: 0 0 10px;
+            font-size: 0.82rem;
+            color: var(--muted);
+            font-weight: 500;
+        }
         .qr-box img {
             display: block;
             max-width: 100%;
@@ -416,18 +516,202 @@ $themeColor = "#0d9488";
         .qr-status.qr-error {
             color: var(--error-text);
         }
-        pre.vcard-preview {
+        .contact-card {
+            font-family: "Outfit", "Segoe UI", Tahoma, sans-serif;
+            border-radius: 22px;
+            overflow: hidden;
+            background: #fff;
+            border: 1px solid rgba(15, 23, 42, 0.07);
+            box-shadow:
+                0 4px 6px -1px rgba(15, 23, 42, 0.06),
+                0 20px 40px -12px rgba(15, 23, 42, 0.12);
+            max-width: 100%;
+        }
+        .contact-card__hero {
+            background:
+                radial-gradient(120% 80% at 100% 0%, rgba(255, 255, 255, 0.14) 0%, transparent 55%),
+                linear-gradient(128deg, #0f766e 0%, #115e59 42%, #134e4a 100%);
+            color: #ecfdf5;
+            padding: 26px 22px 30px;
+            position: relative;
+        }
+        .contact-card__heroInner {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        }
+        .contact-card__avatar {
+            flex-shrink: 0;
+            width: 76px;
+            height: 76px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            font-family: "Cormorant Garamond", Georgia, "Times New Roman", serif;
+            font-size: 1.85rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            background: rgba(255, 255, 255, 0.12);
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+        .contact-card__name {
+            margin: 0 0 4px;
+            font-family: "Cormorant Garamond", Georgia, serif;
+            font-size: 1.85rem;
+            font-weight: 600;
+            line-height: 1.15;
+            letter-spacing: 0.01em;
+        }
+        .contact-card__title {
             margin: 0;
-            padding: 12px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            opacity: 0.95;
+        }
+        .contact-card__org {
+            margin: 6px 0 0;
+            font-size: 0.88rem;
+            font-weight: 300;
+            opacity: 0.88;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+        .contact-card__body {
+            padding: 0 22px 22px;
+        }
+        .contact-card__actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: -18px 0 22px;
+            position: relative;
+            z-index: 1;
+        }
+        .contact-card__hint {
+            margin: -10px 0 20px;
+            font-size: 0.8rem;
+            color: #64748b;
+            line-height: 1.5;
+        }
+        .contact-card__form {
+            display: inline;
+        }
+        .btn-add-contact {
+            appearance: none;
+            border: 0;
+            border-radius: 12px;
+            background: linear-gradient(165deg, #14b8a6, #0d9488);
+            color: #fff;
+            font-weight: 600;
+            font-size: 0.95rem;
+            padding: 12px 20px;
+            cursor: pointer;
+            font-family: inherit;
+            box-shadow: 0 10px 22px rgba(13, 148, 136, 0.35);
+            transition: transform 0.12s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        }
+        .btn-add-contact:hover {
+            filter: brightness(1.05);
+            box-shadow: 0 12px 28px rgba(13, 148, 136, 0.42);
+        }
+        .btn-add-contact:active {
+            transform: translateY(1px);
+        }
+        .contact-card__rows {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+        .contact-row {
+            display: grid;
+            grid-template-columns: 100px 1fr;
+            gap: 12px 16px;
+            padding: 14px 0;
+            border-bottom: 1px solid #f1f5f9;
+            align-items: baseline;
+        }
+        .contact-row:last-child {
+            border-bottom: 0;
+        }
+        .contact-row__label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: #94a3b8;
+        }
+        .contact-row__value {
+            margin: 0;
+            font-size: 0.95rem;
+            color: var(--text);
+            word-break: break-word;
+        }
+        a.contact-row__value {
+            color: #0f766e;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        a.contact-row__value:hover {
+            text-decoration: underline;
+        }
+        .contact-card__note {
+            margin: 16px 0 0;
+            padding: 14px 16px;
             background: #f8fafc;
+            border-radius: 12px;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+        }
+        .contact-card__note strong {
+            display: block;
+            font-size: 0.72rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #94a3b8;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        .contact-card__raw {
+            margin-top: 18px;
+            border-radius: 12px;
             border: 1px solid var(--border);
-            border-radius: 10px;
-            font-size: 0.78rem;
+            background: #fafafa;
+            overflow: hidden;
+        }
+        .contact-card__raw summary {
+            cursor: pointer;
+            padding: 12px 16px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--muted);
+            list-style: none;
+        }
+        .contact-card__raw summary::-webkit-details-marker {
+            display: none;
+        }
+        .contact-card__raw summary::after {
+            content: " ▸";
+            opacity: 0.6;
+        }
+        .contact-card__raw[open] summary::after {
+            content: " ▾";
+        }
+        .contact-card__raw pre {
+            margin: 0;
+            padding: 0 16px 14px;
+            font-size: 0.72rem;
             line-height: 1.45;
             overflow: auto;
-            max-height: 280px;
+            max-height: 200px;
             white-space: pre-wrap;
             word-break: break-word;
+            color: #64748b;
         }
         .btn-secondary {
             display: inline-block;
@@ -440,6 +724,7 @@ $themeColor = "#0d9488";
             padding: 10px 14px;
             cursor: pointer;
             font-size: 0.95rem;
+            font-family: inherit;
         }
         .btn-secondary:hover { background: #ecfdf5; border-color: #94a3b8; }
         fieldset {
@@ -608,25 +893,140 @@ $themeColor = "#0d9488";
         <?php if ($vcardText !== ""): ?>
             <?php
             $vcardB64 = base64_encode($vcardText);
+            $displayName = contactDisplayName($fields);
+            $initials = contactInitials($fields);
+            $bdayDisp = "";
+            if (($fields["bday"] ?? "") !== "" && preg_match('/^\d{4}-\d{2}-\d{2}$/', $fields["bday"])) {
+                $ts = strtotime($fields["bday"] . " 12:00:00 UTC");
+                if ($ts !== false) {
+                    $bdayDisp = date("F j, Y", $ts);
+                }
+            }
+            $addrLines = [];
+            $street = trim($fields["adr_street"] ?? "");
+            $ext = trim($fields["adr_extended"] ?? "");
+            $city = trim($fields["adr_locality"] ?? "");
+            $region = trim($fields["adr_region"] ?? "");
+            $code = trim($fields["adr_code"] ?? "");
+            $country = trim($fields["adr_country"] ?? "");
+            if ($street !== "") {
+                $addrLines[] = $street;
+            }
+            if ($ext !== "") {
+                $addrLines[] = $ext;
+            }
+            $cityLine = trim(implode(", ", array_filter([$city, $region, $code], static fn ($x) => $x !== "")));
+            if ($cityLine !== "") {
+                $addrLines[] = $cityLine;
+            }
+            if ($country !== "") {
+                $addrLines[] = $country;
+            }
             ?>
             <section class="result" aria-live="polite">
-                <h2>Result</h2>
+                <h2>Your contact card</h2>
                 <div class="result-inner">
-                    <div>
-                        <p style="margin:0 0 8px; font-size:0.9rem; color:var(--muted);">Encoded vCard (what the QR contains):</p>
-                        <pre class="vcard-preview" id="vcard-block"><?php echo esc($vcardText); ?></pre>
-                        <?php if ($qrImgUrl !== ""): ?>
-                        <form method="post" style="margin-top:12px;">
-                            <input type="hidden" name="download_qr" value="1">
-                            <input type="hidden" name="vcard_b64" value="<?php echo esc($vcardB64); ?>">
-                            <button type="submit" class="btn-secondary">Download PNG</button>
-                        </form>
-                        <?php endif; ?>
+                    <div class="result-primary">
+                        <article class="contact-card">
+                            <header class="contact-card__hero">
+                                <div class="contact-card__heroInner">
+                                    <div class="contact-card__avatar" aria-hidden="true"><?php echo esc($initials); ?></div>
+                                    <div>
+                                        <h3 class="contact-card__name"><?php echo esc($displayName); ?></h3>
+                                        <?php if (trim($fields["title"] ?? "") !== ""): ?>
+                                            <p class="contact-card__title"><?php echo esc(trim($fields["title"])); ?></p>
+                                        <?php endif; ?>
+                                        <?php if (trim($fields["org"] ?? "") !== ""): ?>
+                                            <p class="contact-card__org"><?php echo esc(trim($fields["org"])); ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </header>
+                            <div class="contact-card__body">
+                                <div class="contact-card__actions">
+                                    <form method="post" class="contact-card__form">
+                                        <input type="hidden" name="download_vcf" value="1">
+                                        <input type="hidden" name="vcard_b64" value="<?php echo esc($vcardB64); ?>">
+                                        <button type="submit" class="btn-add-contact">Add to contacts</button>
+                                    </form>
+                                    <?php if ($qrImgUrl !== ""): ?>
+                                    <form method="post" class="contact-card__form">
+                                        <input type="hidden" name="download_qr" value="1">
+                                        <input type="hidden" name="vcard_b64" value="<?php echo esc($vcardB64); ?>">
+                                        <button type="submit" class="btn-secondary">Download QR PNG</button>
+                                    </form>
+                                    <?php endif; ?>
+                                </div>
+                                <p class="contact-card__hint"><strong>Add to contacts</strong> downloads a <strong>.vcf</strong> file. Open it on your phone or computer to import this person into your address book.</p>
+                                <ul class="contact-card__rows">
+                                    <?php if (trim($fields["nickname"] ?? "") !== ""): ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label">Nickname</span>
+                                        <span class="contact-row__value"><?php echo esc(trim($fields["nickname"])); ?></span>
+                                    </li>
+                                    <?php endif; ?>
+                                    <?php if (($fields["email"] ?? "") !== "" && filter_var($fields["email"], FILTER_VALIDATE_EMAIL)): ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label">Email</span>
+                                        <a class="contact-row__value" href="mailto:<?php echo esc($fields["email"]); ?>"><?php echo esc($fields["email"]); ?></a>
+                                    </li>
+                                    <?php endif; ?>
+                                    <?php
+                                    $phoneLabels = ["tel_cell" => "Mobile", "tel_work" => "Work", "tel_home" => "Home", "tel_fax" => "Fax"];
+                                    foreach ($phoneLabels as $key => $plabel) {
+                                        $num = trim($fields[$key] ?? "");
+                                        if ($num === "") {
+                                            continue;
+                                        }
+                                        $telHref = "tel:" . preg_replace('/[^\d+]/', '', $num);
+                                        if ($telHref === "tel:") {
+                                            $telHref = "tel:" . rawurlencode($num);
+                                        }
+                                        ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label"><?php echo esc($plabel); ?></span>
+                                        <a class="contact-row__value" href="<?php echo esc($telHref); ?>"><?php echo esc($num); ?></a>
+                                    </li>
+                                        <?php
+                                    }
+                                    ?>
+                                    <?php if (($fields["url"] ?? "") !== "" && filter_var($fields["url"], FILTER_VALIDATE_URL)): ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label">Website</span>
+                                        <a class="contact-row__value" href="<?php echo esc($fields["url"]); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc($fields["url"]); ?></a>
+                                    </li>
+                                    <?php endif; ?>
+                                    <?php if ($addrLines !== []): ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label">Address</span>
+                                        <p class="contact-row__value"><?php echo nl2br(esc(implode("\n", $addrLines))); ?></p>
+                                    </li>
+                                    <?php endif; ?>
+                                    <?php if ($bdayDisp !== ""): ?>
+                                    <li class="contact-row">
+                                        <span class="contact-row__label">Birthday</span>
+                                        <span class="contact-row__value"><?php echo esc($bdayDisp); ?></span>
+                                    </li>
+                                    <?php endif; ?>
+                                </ul>
+                                <?php if (trim($fields["note"] ?? "") !== ""): ?>
+                                <div class="contact-card__note">
+                                    <strong>Notes</strong>
+                                    <?php echo nl2br(esc(trim($fields["note"]))); ?>
+                                </div>
+                                <?php endif; ?>
+                                <details class="contact-card__raw">
+                                    <summary>Raw vCard (encoded data)</summary>
+                                    <pre><?php echo esc($vcardText); ?></pre>
+                                </details>
+                            </div>
+                        </article>
                     </div>
                     <div class="qr-box">
                         <?php if ($vcardQrError !== ""): ?>
                             <p class="qr-status qr-error" role="alert"><?php echo esc($vcardQrError); ?></p>
                         <?php else: ?>
+                            <p class="qr-box__caption">Scan to save</p>
                             <p class="qr-status qr-error" id="vcard-qr-err" hidden role="alert"></p>
                             <img id="vcard-qr-img" src="<?php echo esc($qrImgUrl); ?>" width="260" height="260" alt="QR code containing vCard contact data" decoding="async" fetchpriority="high">
                         <?php endif; ?>
