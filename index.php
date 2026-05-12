@@ -132,6 +132,12 @@
                 <a href="qrcode-generator.php">Open QR</a>
             </article>
             <article class="tool-card">
+                <span class="badge">Contact</span>
+                <h2>vCard QR code</h2>
+                <p>Enter name, email, phones, and more. Get a vCard encoded in a QR code for business cards and signage.</p>
+                <a href="vcard-qrcode.php">Open vCard QR</a>
+            </article>
+            <article class="tool-card">
                 <span class="badge">Math</span>
                 <h2>Calculator</h2>
                 <p>Basic arithmetic with add, subtract, multiply, divide, percent, and sign change.</p>
