@@ -183,12 +183,57 @@ function hasEmailOrPhone(array $f): bool
     return false;
 }
 
+/** Maximum vCard payload length (bytes) for QR services and Version-40 QR (~M). */
+const VCARD_QR_MAX_BYTES = 2600;
+
+/**
+ * Same QR image API as qrcode-generator.php (no broken CDN paths).
+ */
+function qrServerImageUrl(string $data, int $size = 260): string
+{
+    return "https://api.qrserver.com/v1/create-qr-code/?size=" . $size . "x" . $size
+        . "&margin=2&ecc=M&data=" . rawurlencode($data);
+}
+
+// ----- Download PNG (POST: reposts vCard as base64) -----
+if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["download_qr"] ?? "") === "1") {
+    $b64 = isset($_POST["vcard_b64"]) ? trim((string) $_POST["vcard_b64"]) : "";
+    $payload = $b64 !== "" ? base64_decode($b64, true) : false;
+    if ($payload === false || !is_string($payload) || strlen($payload) > VCARD_QR_MAX_BYTES) {
+        http_response_code(400);
+        echo "Invalid or oversized vCard for download.";
+        exit;
+    }
+    if (strncmp($payload, "BEGIN:VCARD", 11) !== 0 || stripos($payload, "END:VCARD") === false) {
+        http_response_code(400);
+        echo "Invalid vCard payload.";
+        exit;
+    }
+
+    $qrUrl = qrServerImageUrl($payload, 800);
+    $imageData = @file_get_contents($qrUrl);
+    if ($imageData === false || strlen($imageData) < 100) {
+        http_response_code(502);
+        echo "Unable to fetch QR code image.";
+        exit;
+    }
+
+    $filename = "vcard-contact-qr.png";
+    header("Content-Type: image/png");
+    header("Content-Disposition: attachment; filename=\"" . $filename . "\"");
+    header("Content-Length: " . strlen($imageData));
+    echo $imageData;
+    exit;
+}
+
 // ----- Form page -----
 $fields = collectVcardFieldsFromRequest();
 $error = "";
 $vcardText = "";
+$vcardQrError = "";
+$qrImgUrl = "";
 
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
+if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["download_qr"] ?? "") !== "1") {
     if (!hasAnyNameOrOrg($fields)) {
         $error = "Enter at least a display name, given/family name, or organization.";
     } elseif (!hasEmailOrPhone($fields)) {
@@ -200,6 +245,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     } else {
         $vcardText = buildVcard30($fields);
         logVcardQrGeneration(strlen($vcardText));
+        if (strlen($vcardText) > VCARD_QR_MAX_BYTES) {
+            $vcardQrError = "This contact is too long for one QR code (about " . VCARD_QR_MAX_BYTES . " characters max). Shorten the notes or address and try again.";
+        } else {
+            $qrImgUrl = qrServerImageUrl($vcardText, 260);
+        }
     }
 }
 
@@ -351,7 +401,7 @@ $themeColor = "#0d9488";
             border-radius: 12px;
             background: #fff;
         }
-        .qr-box canvas {
+        .qr-box img {
             display: block;
             max-width: 100%;
             height: auto;
@@ -392,10 +442,6 @@ $themeColor = "#0d9488";
             font-size: 0.95rem;
         }
         .btn-secondary:hover { background: #ecfdf5; border-color: #94a3b8; }
-        .btn-secondary:disabled {
-            opacity: 0.55;
-            cursor: not-allowed;
-        }
         fieldset {
             border: 1px solid var(--border);
             border-radius: 12px;
@@ -560,83 +606,47 @@ $themeColor = "#0d9488";
         <?php endif; ?>
 
         <?php if ($vcardText !== ""): ?>
+            <?php
+            $vcardB64 = base64_encode($vcardText);
+            ?>
             <section class="result" aria-live="polite">
                 <h2>Result</h2>
                 <div class="result-inner">
                     <div>
                         <p style="margin:0 0 8px; font-size:0.9rem; color:var(--muted);">Encoded vCard (what the QR contains):</p>
                         <pre class="vcard-preview" id="vcard-block"><?php echo esc($vcardText); ?></pre>
-                        <div style="margin-top:12px;">
-                            <button type="button" class="btn-secondary" id="vcard-qr-download" disabled>Download PNG</button>
-                        </div>
+                        <?php if ($qrImgUrl !== ""): ?>
+                        <form method="post" style="margin-top:12px;">
+                            <input type="hidden" name="download_qr" value="1">
+                            <input type="hidden" name="vcard_b64" value="<?php echo esc($vcardB64); ?>">
+                            <button type="submit" class="btn-secondary">Download PNG</button>
+                        </form>
+                        <?php endif; ?>
                     </div>
                     <div class="qr-box">
-                        <p class="qr-status" id="vcard-qr-status">Drawing QR code…</p>
-                        <canvas id="vcard-qr-canvas" width="260" height="260" role="img" aria-label="QR code containing vCard contact data"></canvas>
-                        <noscript><p class="qr-status qr-error">Enable JavaScript to draw the QR code in your browser.</p></noscript>
+                        <?php if ($vcardQrError !== ""): ?>
+                            <p class="qr-status qr-error" role="alert"><?php echo esc($vcardQrError); ?></p>
+                        <?php else: ?>
+                            <p class="qr-status qr-error" id="vcard-qr-err" hidden role="alert"></p>
+                            <img id="vcard-qr-img" src="<?php echo esc($qrImgUrl); ?>" width="260" height="260" alt="QR code containing vCard contact data" decoding="async" fetchpriority="high">
+                        <?php endif; ?>
                     </div>
                 </div>
             </section>
-            <script type="application/json" id="vcard-payload"><?php echo json_encode($vcardText, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?></script>
-            <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" crossorigin="anonymous"></script>
+            <?php if ($qrImgUrl !== ""): ?>
             <script>
             (function () {
-                var payloadEl = document.getElementById("vcard-payload");
-                var statusEl = document.getElementById("vcard-qr-status");
-                var canvas = document.getElementById("vcard-qr-canvas");
-                var dlBtn = document.getElementById("vcard-qr-download");
-                if (!payloadEl || !canvas) return;
-                var text;
-                try {
-                    text = JSON.parse(payloadEl.textContent);
-                } catch (e) {
-                    if (statusEl) {
-                        statusEl.textContent = "Could not read contact data.";
-                        statusEl.classList.add("qr-error");
-                    }
-                    return;
-                }
-                function fail(msg) {
-                    if (statusEl) {
-                        statusEl.textContent = msg;
-                        statusEl.classList.add("qr-error");
-                    }
-                }
-                function ready() {
-                    if (typeof QRCode === "undefined") {
-                        fail("QR library did not load. Check your connection or ad blocker, then refresh.");
-                        return;
-                    }
-                    QRCode.toCanvas(canvas, text, {
-                        width: 260,
-                        margin: 2,
-                        errorCorrectionLevel: "M",
-                        color: { dark: "#0f172a", light: "#ffffff" }
-                    }, function (err) {
-                        if (err) {
-                            fail("QR could not be created (data may be too long). Try a shorter note or fewer fields.");
-                            return;
-                        }
-                        if (statusEl) statusEl.style.display = "none";
-                        if (dlBtn) dlBtn.disabled = false;
-                    });
-                }
-                if (document.readyState === "loading") {
-                    document.addEventListener("DOMContentLoaded", ready);
-                } else {
-                    ready();
-                }
-                if (dlBtn) {
-                    dlBtn.addEventListener("click", function () {
-                        if (dlBtn.disabled) return;
-                        var a = document.createElement("a");
-                        a.href = canvas.toDataURL("image/png");
-                        a.download = "vcard-contact-qr.png";
-                        a.click();
-                    });
-                }
+                var img = document.getElementById("vcard-qr-img");
+                var err = document.getElementById("vcard-qr-err");
+                if (!img || !err) return;
+                img.addEventListener("error", function () {
+                    err.hidden = false;
+                    err.textContent = "Could not load the QR image. Allow api.qrserver.com in your blocker or try another network.";
+                    img.style.display = "none";
+                });
             })();
             </script>
+            <?php endif; ?>
         <?php endif; ?>
     </main>
 </body>
